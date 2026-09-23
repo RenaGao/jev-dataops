@@ -6,7 +6,7 @@ import vm from "node:vm";
 
 const code = readFileSync(new URL("../public_demo/runtime.js", import.meta.url), "utf8");
 function runtime() {
-  const context = { crypto: webcrypto, TextEncoder, TextDecoder, File, Blob, Response, setTimeout, fetch: () => { throw new Error("Unexpected network request"); } };
+  const context = { crypto: webcrypto, TextEncoder, TextDecoder, File, Blob, Response, URLSearchParams, setTimeout, fetch: () => { throw new Error("Unexpected network request"); } };
   vm.runInNewContext(code, context);
   return context.jevDemo;
 }
@@ -43,6 +43,17 @@ async function artifact(api, result, name) {
   }
   for (let a = 0; a < groups.length; a++) for (let b = a + 1; b < groups.length; b++)
     assert.ok([...groups[a]].every(group => !groups[b].has(group)), "No group may cross splits.");
+  assert.deepEqual(result.data_report.decision_reasons,
+                   { review: { demo_email_pattern: 1, invalid_content: 1 }, reject: { exact_duplicate: 1, content_length_outside_bounds: 1 } });
+  const [light] = JSON.parse(JSON.stringify(await api.request("/api/runs?view=summary")));
+  assert.deepEqual(light.counts, result.counts);
+  assert.ok(["logs", "data_report", "model_report", "artifacts"].every(field => !(field in light)));
+  const rejected = JSON.parse(JSON.stringify(await api.request("/api/runs/" + result.id + "/records?decision=reject&limit=20&offset=0")));
+  assert.deepEqual(rejected.records.map(entry => [entry.line, entry.reason]), [[81, "exact_duplicate"], [82, "content_length_outside_bounds"]]);
+  assert.equal(rejected.records[1].record.text, "hi"); assert.equal(rejected.has_more, false);
+  const filtered = JSON.parse(JSON.stringify(await api.request("/api/runs/" + result.id + "/records?decision=review&reason=demo_email_pattern&limit=1")));
+  assert.deepEqual(filtered.records.map(entry => entry.line), [83]);
+  await assert.rejects(api.request("/api/runs/" + result.id + "/records?decision=maybe"), /decision must be/);
 }
 {
   const api = runtime();
