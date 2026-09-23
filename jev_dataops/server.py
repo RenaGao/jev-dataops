@@ -23,10 +23,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .runner import Runner
+from .screening import decision_records
 from .store import Store, now
 
 PACKAGE = Path(__file__).parent
 MAX_LINE = 1024 * 1024
+RUN_DETAIL_FIELDS = frozenset({"logs", "data_report", "model_report", "artifacts"})
 
 
 class RunConfig(BaseModel):
@@ -204,8 +206,14 @@ def create_app(data_dir=None):
             return await save_upload(UploadFile(filename="synthetic-dialogues.jsonl", file=stream))
 
     @app.get("/api/runs")
-    def runs(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-        return store.list("run", limit, offset)
+    def runs(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+             view: Literal["full", "summary"] = "full"):
+        items = store.list("run", limit, offset)
+        if view == "summary":
+            # Logs, reports and artifact inventories are fetched per run; a polling
+            # client only needs status and counts for the list.
+            items = [{key: value for key, value in item.items() if key not in RUN_DETAIL_FIELDS} for item in items]
+        return items
 
     def get_run(run_id):
         item = store.get("run", run_id)
@@ -236,6 +244,14 @@ def create_app(data_dir=None):
     @app.get("/api/runs/{run_id}")
     def run(run_id: str):
         return get_run(run_id)
+
+    @app.get("/api/runs/{run_id}/records")
+    def records(run_id: str, decision: Literal["keep", "review", "reject"] = "review",
+                reason: str | None = Query(None, max_length=300), limit: int = Query(50, ge=1, le=200),
+                offset: int = Query(0, ge=0, le=10_000_000)):
+        get_run(run_id)
+        page = decision_records(store.root / "runs" / run_id / "screening", decision, reason, limit, offset)
+        return {"decision": decision, "reason": reason, "offset": offset, **page}
 
     @app.post("/api/runs/{run_id}/cancel")
     def cancel(run_id: str):

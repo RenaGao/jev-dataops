@@ -8,7 +8,25 @@ const state = {
   token: sessionStorage.getItem("jev_api_token") || "", loading: false,
   uploading: false, submitting: false, polling: false, timer: null,
   toastTimer: null, logsSignature: "", artifactsSignature: "", actionPending: false, settlePending: false, lossChartWidth: null,
+  details: new Map(),
+  records: { key: "", decision: "review", reason: "", offset: 0, hasMore: false, loading: false },
 };
+// Measured on typesafe/jev-1.13 with the bundled rubrics: $0.0023 for 81 rows.
+const COST_PER_ROW = 0.0000285;
+const reasonNames = {
+  exact_duplicate: "Exact duplicate", content_length_outside_bounds: "Length outside the allowed range",
+  invalid_content: "Unreadable content", invalid_response: "Malformed JEV answer", missing_supported_content: "No supported text fields",
+  demo_email_pattern: "Email address (demo rule)", cancelled: "Cancelled before evaluation",
+  keep_probability_below_threshold: "low probability on keep", reject_probability_above_threshold: "reject probability too high",
+  confidence_below_threshold: "JEV confidence below threshold",
+};
+function humanReason(label) {
+  return String(label).split(", ").map((part) => {
+    const [dimension, cause] = part.includes(":") ? part.split(":") : [null, part];
+    const text = reasonNames[cause] || cause.replaceAll("_", " ");
+    return dimension ? `${dimension} · ${text}` : text;
+  }).join(" + ");
+}
 const statuses = { queued: "Queued", running: "Running", completed: "Completed", failed: "Failed", cancelled: "Canceled" };
 const rubricNames = { general: "General", finance: "Finance", code: "Code" };
 const stages = [
@@ -106,6 +124,12 @@ function updateModeNotice() {
   const description = $("mode-notice").querySelector("p > span");
   $("mode-notice").classList.toggle("real-mode", provider !== "demo");
   $("trainer").disabled = !autoTrain;
+  for (const id of ["confidence", "concurrency", "max-requests"]) {
+    $(id).disabled = provider === "demo";
+    $(id).closest(".confidence-field, .field").classList.toggle("inactive", provider === "demo");
+  }
+  $("demo-controls-note").hidden = provider !== "demo";
+  updateBudget();
   if (provider === "demo") {
     title.textContent = autoTrain && trainer === "huggingface" ? "Local screening + LLM training" : "Demo mode";
     description.textContent = autoTrain && trainer === "huggingface"
@@ -118,6 +142,27 @@ function updateModeNotice() {
       : `Data is sent to your JEV provider. Only submit data you can share. Retained records train a LoRA adapter for ${state.health?.training?.base_model || "the configured model"}.`;
   }
   updateRubricNotice();
+}
+// Every unique row costs at least one request, and a malformed answer is asked for
+// again, so a limit below the row count ends the run incomplete and blocks training.
+function updateBudget() {
+  const note = $("budget-note"), raise = $("budget-raise");
+  const dataset = state.datasets.find((item) => item.id === state.datasetId);
+  const rows = Number(dataset?.rows);
+  if ($("provider").value === "demo" || !finiteNonnegative(rows) || !rows) { note.hidden = true; return; }
+  const limit = Number($("max-requests").value) || 0;
+  const cost = rows * COST_PER_ROW;
+  const estimate = `About $${cost < 0.01 ? cost.toFixed(4) : cost.toFixed(2)} for ${number(rows)} rows at the measured rate; the actual cost is recorded in the run.`;
+  const suggested = Math.min(1000000, Math.ceil(rows * 1.1));
+  const short = limit < rows;
+  note.classList.toggle("warning", short);
+  $("budget-text").textContent = short
+    ? `The request limit (${number(limit)}) is below the ${number(rows)} rows in this dataset. Screening will stop after about ${number(limit)} rows, the run will be incomplete, and training will not start. ${estimate}`
+    : estimate;
+  raise.hidden = !short;
+  raise.textContent = `Raise limit to ${number(suggested)}`;
+  raise.dataset.value = String(suggested);
+  note.hidden = false;
 }
 function updateRubricNotice() {
   const rubric = $("rubric").value;
@@ -153,6 +198,7 @@ function renderDatasets() {
   renderOverview();
   renderDatasetPreview();
   updateStartState();
+  updateBudget();
 }
 function renderDatasetPreview() {
   const dataset = state.datasets.find((item) => item.id === state.datasetId);
@@ -262,6 +308,123 @@ function renderScreeningSummary(run) {
   if (report.counts?.duplicates) parts.push(`${number(report.counts.duplicates)} duplicates (${report.dedupe || "whitespace"} match)`);
   if (parts.length) { summary.textContent = parts.join(" · "); summary.hidden = false; }
   if (report.notice && report.complete && report.training_ready === false) { notice.textContent = report.notice; notice.hidden = false; }
+}
+function renderDimensionReport(report) {
+  const container = $("dimension-report"); container.replaceChildren();
+  const dimensions = Object.entries(report?.dimensions || {});
+  if (!dimensions.length) {
+    container.append(el("p", "chart-note", report?.mode === "jev_api" ? "No rows reached JEV." : "Demo rules do not score dimensions."));
+    return;
+  }
+  const table = el("table", "dimension-table");
+  table.append(el("caption", "sr-only", "Decisions per screening dimension"));
+  const head = el("tr");
+  for (const label of ["Dimension", "Keep", "Review", "Reject", "Mean P(answer)", "Mean confidence", "Gate", "Turned to review"]) {
+    const cell = el("th", "", label); cell.scope = "col"; head.append(cell);
+  }
+  const thead = el("thead"); thead.append(head);
+  const tbody = el("tbody");
+  for (const [name, stats] of dimensions) {
+    const gate = report.thresholds?.[name];
+    const gateText = gate ? [`P ≥ ${gate.min_probability}`, `reject ≤ ${gate.max_reject_probability}`, gate.use_confidence ? `confidence ≥ ${gate.min_confidence}` : null].filter(Boolean).join(" · ") : "—";
+    const triggered = Object.entries(stats.gates || {}).map(([key, count]) => `${reasonNames[key] || key}: ${number(count)}`).join("; ") || "—";
+    const row = el("tr");
+    const title = el("th", "", name); title.scope = "row"; row.append(title);
+    for (const value of [number(stats.keep), number(stats.review), number(stats.reject),
+      finiteNonnegative(stats.mean_probability) ? stats.mean_probability.toFixed(2) : "—",
+      finiteNonnegative(stats.mean_confidence) ? stats.mean_confidence.toFixed(2) : "—", gateText, triggered]) row.append(el("td", "", value));
+    tbody.append(row);
+  }
+  table.append(thead, tbody);
+  const wrap = el("div", "table-scroll"); wrap.append(table);
+  container.append(wrap);
+}
+function recordText(record) {
+  let messages = record?.messages;
+  if (typeof messages === "string") { try { messages = JSON.parse(messages); } catch (_) { messages = null; } }
+  if (Array.isArray(messages)) return messages.map((message) => `${message?.role ?? "?"}: ${message?.content ?? ""}`).join("\n");
+  if (typeof record?.text === "string") return record.text;
+  if (record?.instruction !== undefined) return [record.instruction, record.input, record.output].filter((part) => typeof part === "string" && part).join("\n→ ");
+  if (record?.prompt !== undefined) return `${record.prompt}\n→ ${record.response ?? ""}`;
+  return JSON.stringify(record);
+}
+function renderRecordsSection(run) {
+  const section = $("records-section");
+  const report = run.data_report;
+  const held = (run.counts?.review || 0) + (run.counts?.reject || 0);
+  section.hidden = !report || !held;
+  if (section.hidden) return;
+  const records = state.records;
+  const reasons = report.decision_reasons?.[records.decision] || {};
+  for (const button of section.querySelectorAll(".segment")) {
+    const decision = button.dataset.decision;
+    button.setAttribute("aria-pressed", String(decision === records.decision));
+    button.textContent = `${decision === "review" ? "Review" : "Reject"} · ${number(run.counts?.[decision] || 0)}`;
+  }
+  const select = $("records-reason");
+  const options = [["", "All reasons"], ...Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([key, count]) => [key, `${humanReason(key)} (${number(count)})`])];
+  if (select.dataset.signature !== JSON.stringify(options)) {
+    select.dataset.signature = JSON.stringify(options);
+    select.replaceChildren(...options.map(([value, label]) => { const option = el("option", "", label); option.value = value; return option; }));
+  }
+  if (!options.some(([value]) => value === records.reason)) records.reason = "";
+  select.value = records.reason;
+  const list = $("reason-list"); list.replaceChildren();
+  for (const [key, count] of Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 5)) {
+    const item = el("li", "reason-item"); item.append(el("span", "", humanReason(key)), el("strong", "", number(count))); list.append(item);
+  }
+  const key = `${run.id}:${run.attempt ?? 0}:${records.decision}:${records.reason}`;
+  if (key !== records.key) { records.key = key; loadRecords(run.id, true); }
+}
+async function loadRecords(runId, reset) {
+  const records = state.records;
+  if (reset) { records.offset = 0; $("records-list").replaceChildren(el("p", "chart-note", "Loading records…")); }
+  const key = records.key;
+  records.loading = true; $("records-more").disabled = true;
+  try {
+    const query = new URLSearchParams({ decision: records.decision, limit: "20", offset: String(records.offset) });
+    if (records.reason) query.set("reason", records.reason);
+    const page = await request(`/api/runs/${encodeURIComponent(runId)}/records?${query}`);
+    if (key !== records.key) return;
+    const list = $("records-list");
+    if (reset) list.replaceChildren();
+    for (const entry of page.records) list.append(recordCard(entry));
+    if (!list.children.length) list.append(el("p", "chart-note", "No records in this partition."));
+    records.offset += page.records.length; records.hasMore = page.has_more;
+    $("records-count").textContent = `Showing ${number(records.offset)}${page.has_more ? "+" : ""}`;
+  } catch (error) { if (key === records.key) $("records-list").replaceChildren(el("p", "chart-note", errorMessage(error))); }
+  finally { records.loading = false; $("records-more").hidden = !records.hasMore; $("records-more").disabled = false; }
+}
+function recordCard(entry) {
+  const card = el("article", "record-card");
+  const header = el("div", "record-header");
+  header.append(el("span", "record-line", `Line ${number(entry.line)}`), el("span", "record-reason", humanReason(entry.reason)));
+  card.append(header);
+  const text = recordText(entry.record);
+  const body = el("p", `record-text${text.trim() ? "" : " empty"}`, text.trim() ? (text.length > 600 ? `${text.slice(0, 600)}…` : text) : "(empty content)");
+  card.append(body);
+  if (text.length > 600) {
+    const toggle = el("button", "text-button record-toggle", "Show all");
+    toggle.type = "button"; toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", () => {
+      const open = toggle.getAttribute("aria-expanded") !== "true";
+      body.textContent = open ? text : `${text.slice(0, 600)}…`;
+      toggle.textContent = open ? "Show less" : "Show all"; toggle.setAttribute("aria-expanded", String(open));
+    });
+    card.append(toggle);
+  }
+  const dimensions = Object.entries(entry.dimensions || {});
+  if (dimensions.length) {
+    const pills = el("div", "record-dimensions");
+    for (const [name, dimension] of dimensions) {
+      const probability = finiteNonnegative(dimension.probability) ? ` · P ${dimension.probability.toFixed(2)}` : "";
+      const confidence = finiteNonnegative(dimension.confidence) ? ` · conf ${dimension.confidence.toFixed(2)}` : "";
+      pills.append(el("span", `dimension-pill ${dimension.decision}`, `${name}: ${dimension.value}${probability}${confidence}`));
+    }
+    card.append(pills);
+  }
+  if (entry.detail) card.append(el("p", "record-detail", entry.detail));
+  return card;
 }
 function renderDistribution(run) {
   const categories = [["keep", "Keep"], ["review", "Review"], ["reject", "Reject"]];
@@ -431,21 +594,37 @@ function renderRun() {
   for (const key of ["keep", "review", "reject"]) $( `count-${key}`).textContent = run.counts?.[key] !== undefined ? number(run.counts[key]) : "—";
   renderScreeningSummary(run);
   renderDistribution(run);
+  renderRecordsSection(run);
   renderModelReport(run.model_report);
   $("data-report-section").hidden = !run.data_report;
   $("data-report").textContent = run.data_report ? JSON.stringify(run.data_report, null, 2) : "";
+  if (run.data_report) renderDimensionReport(run.data_report);
   renderLogs(run); renderArtifacts(run);
 }
 function upsertRun(run) {
+  state.details.set(run.id, run);
   const position = state.runs.findIndex((item) => item.id === run.id);
   if (position < 0) state.runs.unshift(run); else state.runs[position] = run;
+}
+// The list endpoint returns summaries; the selected run's logs and reports come
+// from its own endpoint, fetched again only when the run has changed.
+function mergeSummaries(summaries) {
+  state.runs = summaries.map((summary) => {
+    const detail = state.details.get(summary.id);
+    return detail && detail.updated_at === summary.updated_at ? detail : summary;
+  });
+}
+async function refreshSelected() {
+  const id = state.runId;
+  const summary = state.runs.find((run) => run.id === id);
+  if (!summary || state.details.get(id)?.updated_at === summary.updated_at) return;
+  upsertRun(await request(`/api/runs/${encodeURIComponent(id)}`));
 }
 async function selectRun(id) {
   state.runId = id;
   renderRunList(); renderRun();
   try {
-    const run = await request(`/api/runs/${encodeURIComponent(id)}`);
-    upsertRun(run);
+    upsertRun(await request(`/api/runs/${encodeURIComponent(id)}`));
     if (state.runId === id) { renderRunList(); renderRun(); }
     schedulePoll();
   } catch (error) { showError(error); }
@@ -454,11 +633,13 @@ async function loadWorkspace() {
   if (state.loading) return;
   state.loading = true; $("refresh-button").disabled = true; updateStartState();
   try {
-    const [health, datasets, runs] = await Promise.all([request("/api/health"), request("/api/datasets"), request("/api/runs")]);
+    const [health, datasets, runs] = await Promise.all([request("/api/health"), request("/api/datasets"), request("/api/runs?view=summary")]);
     applyHealth(health);
     state.datasets = datasets;
-    state.runs = runs;
+    state.details.clear(); state.records.key = "";
+    mergeSummaries(runs);
     if (!state.runs.some((run) => run.id === state.runId)) state.runId = state.runs[0]?.id || null;
+    await refreshSelected();
     renderDatasets(); renderRunList(); renderRun();
     $("global-error").hidden = true; setConnection(true);
   } catch (error) { setConnection(false); showError(error); }
@@ -474,11 +655,12 @@ async function pollRuns() {
   state.polling = true;
   let failed = false;
   try {
-    const runs = await request("/api/runs");
+    const runs = await request("/api/runs?view=summary");
     const priorSelected = state.runs.find((run) => run.id === state.runId);
     // One follow-up fetch also picks up artifacts finalized after terminal status.
     state.settlePending = state.runs.some((previous) => isActive(previous) && runs.some((current) => current.id === previous.id && !isActive(current)));
-    state.runs = runs;
+    mergeSummaries(runs);
+    await refreshSelected();
     renderRunList(); renderRun(); setConnection(true);
     const current = state.runs.find((run) => run.id === state.runId);
     if (isActive(priorSelected) && current && !isActive(current)) showToast(`Workflow ${String(statuses[current.status] || current.status).toLowerCase()}`, current.status === "failed");
@@ -545,7 +727,14 @@ $("retry-button").addEventListener("click", () => runAction("retry"));
 $("confidence").addEventListener("input", () => { $("confidence-value").textContent = Number($("confidence").value).toFixed(2); });
 for (const id of ["provider", "trainer", "auto-train"]) $(id).addEventListener("change", updateModeNotice);
 $("rubric").addEventListener("change", updateRubricNotice);
-$("dataset-select").addEventListener("change", (event) => { state.datasetId = event.target.value; renderDatasetPreview(); updateStartState(); });
+$("dataset-select").addEventListener("change", (event) => { state.datasetId = event.target.value; renderDatasetPreview(); updateStartState(); updateBudget(); });
+$("max-requests").addEventListener("input", updateBudget);
+for (const button of document.querySelectorAll("#records-section .segment")) {
+  button.addEventListener("click", () => { state.records.decision = button.dataset.decision; state.records.reason = ""; renderRun(); });
+}
+$("records-reason").addEventListener("change", (event) => { state.records.reason = event.target.value; renderRun(); });
+$("records-more").addEventListener("click", () => { if (state.runId && !state.records.loading) loadRecords(state.runId, false); });
+$("budget-raise").addEventListener("click", () => { $("max-requests").value = $("budget-raise").dataset.value; updateBudget(); });
 $("file-input").addEventListener("change", (event) => uploadDataset(event.target.files[0]));
 $("example-button").addEventListener("click", () => uploadDataset(null, true));
 $("refresh-button").addEventListener("click", loadWorkspace);

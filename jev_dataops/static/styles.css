@@ -335,6 +335,16 @@ progress::-moz-progress-bar { background: #79a75b; border-radius: 5px; }
 .data-report { margin-bottom: 22px; border: 1px solid #e1e9d5; border-radius: 8px; background: #fdfefb; }
 .data-report summary { min-height: 44px; padding: 12px; font-size: 12px; color: #698349; cursor: pointer; }
 .data-report pre { padding: 0 13px 13px; margin: 0; max-height: 240px; overflow: auto; font-size: 11px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; color: #6b8550; }
+.raw-report { margin: 0 13px 13px; }
+.raw-report summary { min-height: 36px; padding: 8px 0; font-size: 11px; }
+.raw-report pre { padding: 0; }
+.dimension-report { padding: 0 13px 6px; }
+.table-scroll { overflow-x: auto; }
+.dimension-table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+.dimension-table th, .dimension-table td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid #e8eee0; vertical-align: top; }
+.dimension-table thead th { font-weight: 550; color: #68775d; font-size: 10px; white-space: nowrap; }
+.dimension-table tbody th { font-weight: 600; color: #45662f; }
+.dimension-table td { color: #4a5a44; }
 .artifact-section { margin-top: 23px; padding-top: 21px; border-top: 1px solid #e4ecd8; }
 .artifact-list { display: flex; flex-wrap: wrap; gap: 8px; }
 .artifact-button { min-height: 44px; display: flex; align-items: center; gap: 7px; padding: 9px 11px; max-width: 100%; border: 1px solid #dce8cd; background: #f6faee; border-radius: 7px; color: #61813f; font-size: 11px; }
@@ -357,6 +367,33 @@ progress::-moz-progress-bar { background: #79a75b; border-radius: 5px; }
 .distribution-dot.review { background: #c9ad66; }
 .distribution-dot.reject { background: #bb8e7a; }
 .distribution-label { color: #68775d; }
+.records-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+.records-controls select { width: auto; max-width: 100%; height: 38px; padding: 6px 28px 6px 10px; border-color: #dce6d0; border-radius: 7px; font-size: 12px; }
+.segmented { display: inline-flex; border: 1px solid #dce6d0; border-radius: 7px; overflow: hidden; }
+.segment { min-height: 38px; padding: 6px 12px; background: #fff; color: #5b7b44; font-size: 12px; }
+.segment + .segment { border-left: 1px solid #dce6d0; }
+.segment[aria-pressed="true"] { background: var(--green); color: #fff; }
+.reason-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.reason-item { display: flex; gap: 6px; align-items: baseline; font-size: 11px; background: #f4f6ee; border: 1px solid #e4ead9; border-radius: 6px; padding: 4px 8px; color: #56694a; }
+.reason-item strong { color: #45662f; font-variant-numeric: tabular-nums; }
+.records-list { display: grid; gap: 8px; margin-bottom: 10px; max-height: 620px; overflow-y: auto; overscroll-behavior: contain; }
+.record-card { border: 1px solid #e4ead9; border-radius: 8px; background: #fff; padding: 11px 12px; }
+.record-header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin-bottom: 6px; font-size: 10px; }
+.record-line { color: #68775d; font-variant-numeric: tabular-nums; }
+.record-reason { color: #8a6a2a; font-weight: 550; }
+.record-text { margin: 0; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.record-text.empty { color: var(--muted); font-style: italic; }
+.record-toggle { min-height: 32px; padding: 4px 0; }
+.record-dimensions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.dimension-pill { font-size: 10px; border-radius: 5px; padding: 3px 6px; background: #eef4e7; color: #4f6c35; font-variant-numeric: tabular-nums; }
+.dimension-pill.review { background: #f7efd9; color: #7d6224; }
+.dimension-pill.reject { background: #f5e5de; color: #8c4b37; }
+.record-detail { margin: 6px 0 0; font-size: 11px; color: var(--danger); }
+.budget-note { margin: 10px 0 16px; padding: 10px 12px; border: 1px solid #e1e9d5; border-radius: 8px; background: #f8faf3; font-size: 11px; line-height: 1.6; color: #56694a; }
+.budget-note p { margin: 0; }
+.budget-note.warning { border-color: #ead4c8; background: #fff3eb; color: #7a4a33; }
+.budget-note button { margin-top: 8px; }
+.inactive { opacity: .55; }
 .distribution-value { color: #4f6c35; font-weight: 550; font-variant-numeric: tabular-nums; }
 .loss-svg { display: block; width: 100%; height: auto; max-height: 220px; fill: none; stroke: none; overflow: visible; }
 .loss-grid { stroke: #e0e9d3; stroke-width: 1; stroke-dasharray: 3 4; }

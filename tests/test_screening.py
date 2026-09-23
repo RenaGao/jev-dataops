@@ -143,6 +143,24 @@ class ScreeningTests(unittest.TestCase):
         self.assertEqual(report["counts"]["duplicates"], 0)
         self.assertEqual(len(FakeClient.calls), 2)
 
+    def test_jev_reasons_name_the_deciding_dimensions(self):
+        from jev_dataops.screening import decision_records, reason_label
+
+        self.write([{"text": "A useful training example"}, {"text": "Another useful training example"}])
+        def low_quality(payload):
+            response = valid_response(payload["questions"])
+            response["answers"]["quality"].update(choice="good", probabilities={"good": 0.5, "uncertain": 0.3, "bad": 0.2})
+            return response
+        FakeClient.behavior = low_quality
+        report = self.live()
+        self.assertEqual(report["decision_reasons"]["review"], {"quality:keep_probability_below_threshold": 2})
+        page = decision_records(self.out, "review", "quality:keep_probability_below_threshold", limit=1)
+        self.assertEqual(page["records"][0]["record"]["text"], "A useful training example")
+        self.assertTrue(page["has_more"])
+        self.assertEqual(reason_label({"reason": "jev_decision", "decision": "reject", "dimensions": {
+            "privacy": {"decision": "reject", "value": "sensitive"}, "quality": {"decision": "reject", "value": "bad"},
+            "trainability": {"decision": "keep", "value": "suitable"}}}), "privacy:sensitive, quality:bad")
+
     def test_usage_and_models_are_aggregated_but_not_cached(self):
         self.write([{"text": f"Useful unique record number {i}"} for i in range(3)])
         def priced(payload):

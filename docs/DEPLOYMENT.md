@@ -44,8 +44,9 @@ Interactive schema: `/docs`. Authentication: `Authorization: Bearer <JEV_API_TOK
 | GET | `/api/health` | Runtime/provider availability, no keys |
 | GET / POST | `/api/datasets` | List / multipart upload (`file`) |
 | POST | `/api/datasets/example` | Load bundled synthetic records |
-| GET / POST | `/api/runs` | List / launch configured workflow |
+| GET / POST | `/api/runs` | List / launch configured workflow; `?view=summary` omits logs, reports, and artifacts |
 | GET | `/api/runs/{id}` | Status, reports, bounded logs |
+| GET | `/api/runs/{id}/records` | Screened records with their reasons: `decision=keep\|review\|reject`, optional `reason`, `limit` (≤200), `offset` |
 | POST | `/api/runs/{id}/cancel` | Cooperative cancellation |
 | POST | `/api/runs/{id}/retry` | Reuse screening cache, fresh training attempt |
 | GET | `/api/runs/{id}/artifacts/{path}` | Download enumerated run artifact |
