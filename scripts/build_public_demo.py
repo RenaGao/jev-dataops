@@ -46,6 +46,9 @@ def build(destination):
     start, end = app.index("function updateRubricNotice()"), app.index("function renderOverview()")
     app = app[:start] + 'function updateRubricNotice() {\n  $("rubric-note").textContent = "This public demo uses general local rules. Domain-specific JEV screening and LoRA training are available in the self-hosted version.";\n}\n' + app[end:]
     app = app.replace('$("trainer").disabled = !autoTrain;', '$("trainer").disabled = true;')
+    note = '$("demo-controls-note").hidden = provider !== "demo";'
+    assert note in app
+    app = app.replace(note, '$("demo-controls-note").hidden = true;')
     app = app.replace("Uploading and checking your data…", "Reading and checking your data…")
     app = app.replace("Upload complete", "File loaded")
     app = app.replace("Queued for local execution", "Queued in this browser")
