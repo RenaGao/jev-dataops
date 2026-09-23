@@ -6,9 +6,11 @@ credentials, and local training artifacts are never copied into the website.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
@@ -26,6 +28,19 @@ SITE_FILES = (
     "assets/favicon.svg",
 )
 METRIC_DOMAINS = ("general", "finance", "code", "enterprise", "legal", "medical")
+ASSET_REFERENCE = re.compile(r'(src|href)="(/(?:static|assets)/[^"?#]+\.(?:js|css))"')
+
+
+def _fingerprint_assets(site: Path) -> None:
+    # Static hosts cache scripts heuristically; a stale runtime paired with a new app.js breaks the demo.
+    def versioned(match: re.Match) -> str:
+        asset = site / match[2].lstrip("/")
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()[:10]
+        return f'{match[1]}="{match[2]}?v={digest}"'
+
+    for page in site.rglob("*.html"):
+        html = page.read_text(encoding="utf-8")
+        page.write_text(ASSET_REFERENCE.sub(versioned, html), encoding="utf-8")
 
 
 def _build_demo(destination: Path) -> None:
@@ -94,6 +109,7 @@ def build(destination: str | Path) -> Path:
                 output = staging / "assets" / destination_dir / source.name
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, output)
+        _fingerprint_assets(staging)
         (staging / MARKER).write_text(
             json.dumps({"project": "jev-dataops-public-website", "schema_version": 1}) + "\n",
             encoding="utf-8",

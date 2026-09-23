@@ -2,7 +2,8 @@
 "use strict";
 (function (root) {
   const MAX_BYTES = 2 * 1024 * 1024, MAX_ROWS = 1000;
-  const datasets = [], runs = [], payloads = new Map(), files = new Map();
+  const datasets = [], runs = [], payloads = new Map(), files = new Map(), screened = new Map();
+  const RUN_DETAIL_FIELDS = ["logs", "data_report", "model_report", "artifacts"];
   const encoder = new TextEncoder();
   const now = () => new Date().toISOString();
   const pause = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -118,8 +119,9 @@
     payloads.set(item.id, records); datasets.unshift(item); return copy(item);
   }
   async function screen(records, run) {
-    const seen = new Set(), parts = { keep: [], review: [], reject: [] }, audit = [];
+    const seen = new Set(), parts = { keep: [], review: [], reject: [] }, audit = [], entries = [];
     const counts = { total: 0, keep: 0, review: 0, reject: 0, duplicates: 0 };
+    const decision_reasons = { review: {}, reject: {} };
     for (let i = 0; i < records.length; i++) {
       checkCancel(run);
       const record = records[i]; let decision = "review", reason = "invalid_content", stateHash = null;
@@ -137,10 +139,12 @@
       } catch (_) { /* Invalid records remain in the review partition. */ }
       parts[decision].push(record); counts[decision]++; counts.total++;
       audit.push({ line: i + 1, state_hash: stateHash, decision, reason, mode: "browser_demo_rules" });
+      entries.push({ line: i + 1, decision, reason, record });
+      if (decision !== "keep") decision_reasons[decision][reason] = (decision_reasons[decision][reason] || 0) + 1;
       run.counts = { ...counts }; run.progress = { processed: i + 1, total: records.length };
       if (i % 20 === 0) await pause();
     }
-    return { parts, audit, counts };
+    return { parts, audit, counts, entries, decision_reasons };
   }
   async function splitRecords(records, run) {
     const parents = new Map(), items = [];
@@ -234,7 +238,8 @@
       log(run, "Browser Demo: local schema, length, duplicate, and email checks. No JEV request.");
       const result = await screen(payloads.get(run.dataset_id), run);
       run.stage = "data_evaluation";
-      run.data_report = { mode: "browser_demo_rules", complete: true, status: "complete", counts: result.counts, processed: result.counts.total, limitations: "Local rules only; domain and confidence settings do not change these decisions." };
+      screened.set(run.id, result.entries);
+      run.data_report = { mode: "browser_demo_rules", complete: true, status: "complete", counts: result.counts, processed: result.counts.total, decision_reasons: result.decision_reasons, limitations: "Local rules only; domain and confidence settings do not change these decisions." };
       for (const [key, rows] of Object.entries(result.parts)) artifact(run, "screening/" + key + ".jsonl", rows.length ? jsonl(rows) : "");
       artifact(run, "screening/audit.jsonl", jsonl(result.audit));
       artifact(run, "screening/data_report.json", JSON.stringify(run.data_report, null, 2));
@@ -264,12 +269,27 @@
     const run = { id: previous?.id || id(), dataset_id: dataset.id, name: dataset.name, status: "queued", stage: "upload", config: { ...body }, created_at: previous?.created_at || now(), updated_at: now(), counts: {}, progress: { processed: 0, total: dataset.rows }, logs: [], artifacts: [], model_report: null, data_report: null, error: null, cancelRequested: false };
     if (previous) {
       runs.splice(runs.indexOf(previous), 1);
+      screened.delete(previous.id);
       for (const artifact of previous.artifacts) files.delete(artifact.url);
     }
     runs.unshift(run); setTimeout(() => execute(run), 0); return copy(run);
   }
-  async function request(path, options = {}) {
+  function summary(run) {
+    const light = copy(run);
+    for (const field of RUN_DETAIL_FIELDS) delete light[field];
+    return light;
+  }
+  function records(run, query) {
+    const decision = query.get("decision") || "review", reason = query.get("reason");
+    assert(["keep", "review", "reject"].includes(decision), "decision must be keep, review, or reject.");
+    const limit = Math.min(200, Math.max(1, Number(query.get("limit")) || 50)), offset = Math.max(0, Number(query.get("offset")) || 0);
+    const matches = (screened.get(run.id) || []).filter(entry => entry.decision === decision && (!reason || entry.reason === reason));
+    const page = matches.slice(offset, offset + limit).map(entry => ({ line: entry.line, reason: entry.reason, error: null, detail: null, dimensions: {}, record: entry.record }));
+    return copy({ decision, reason, offset, records: page, has_more: matches.length > offset + limit });
+  }
+  async function request(fullPath, options = {}) {
     const method = options.method || "GET", body = options.body;
+    const [path, search = ""] = fullPath.split("?"), query = new URLSearchParams(search);
     if (path === "/api/health") return { status: "ok", version: "0.1.0-browser-demo", max_upload_mb: 2, providers: { demo: true, openrouter: false, typesafe: false }, training: { huggingface: false, base_model: "Browser byte-bigram demo" } };
     if (path === "/api/datasets/example" && method === "POST") {
       const response = await fetch("/static/example.jsonl");
@@ -277,11 +297,12 @@
       return upload(new File([await response.blob()], "synthetic-dialogues.jsonl"));
     }
     if (path === "/api/datasets") return method === "POST" ? upload(body.get("file")) : copy(datasets);
-    if (path === "/api/runs") return method === "POST" ? start(body) : copy(runs);
+    if (path === "/api/runs") return method === "POST" ? start(body) : query.get("view") === "summary" ? runs.map(summary) : copy(runs);
     if (files.has(path)) return new Response(files.get(path));
-    const match = path.match(/^\/api\/runs\/([a-f0-9]+)(?:\/(cancel|retry))?$/);
+    const match = path.match(/^\/api\/runs\/([a-f0-9]+)(?:\/(cancel|retry|records))?$/);
     if (match) {
       const run = runs.find(item => item.id === match[1]); assert(run, "Run not found.");
+      if (match[2] === "records") return records(run, query);
       if (match[2] === "cancel") {
         assert(["running", "queued"].includes(run.status), "This run has already finished.");
         run.cancelRequested = true; return copy(run);

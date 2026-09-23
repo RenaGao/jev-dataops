@@ -233,6 +233,57 @@ def _local_result(decision, reason, **extra):
     return {"decision": decision, "reason": reason, "dimensions": {}, **extra}
 
 
+def reason_label(result):
+    """Why a row landed where it did, as one short key: a local rule such as
+    `exact_duplicate`, or for a Jev decision the dimensions that decided it, e.g.
+    `quality:keep_probability_below_threshold` or `privacy:sensitive`."""
+    if result.get("reason") != "jev_decision":
+        return result.get("reason") or "unknown"
+    decisive = [f"{name}:{dimension.get('gate') or dimension.get('value')}"
+                for name, dimension in sorted(result.get("dimensions", {}).items())
+                if dimension.get("decision") == result["decision"]]
+    return ", ".join(decisive) or "jev_decision"
+
+
+def decision_records(directory, decision, reason=None, limit=50, offset=0):
+    """Page through the rows of one partition with their audit entries.
+
+    Rows are written to `<decision>.jsonl` in the same order as their audit lines,
+    so the n-th audit entry with that decision belongs to the n-th row of the file.
+    Reads stop once the page is filled; a trailing line still being written ends
+    the scan instead of failing it.
+    """
+    if decision not in ("keep", "review", "reject"):
+        raise ValueError("decision must be keep, review or reject")
+    directory = Path(directory)
+    audit_path, rows_path = directory / "audit.jsonl", directory / f"{decision}.jsonl"
+    page, matched = [], 0
+    if not audit_path.is_file() or not rows_path.is_file():
+        return {"records": page, "has_more": False}
+    with audit_path.open(encoding="utf-8") as audit_lines, rows_path.open(encoding="utf-8") as record_lines:
+        for raw in audit_lines:
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                break
+            if entry.get("decision") != decision:
+                continue
+            raw_record = record_lines.readline()
+            if not raw_record.endswith("\n"):
+                break
+            label = reason_label(entry)
+            if reason and label != reason:
+                continue
+            matched += 1
+            if matched <= offset:
+                continue
+            if len(page) == limit:
+                return {"records": page, "has_more": True}
+            page.append({"line": entry.get("line"), "reason": label, "error": entry.get("error"), "detail": entry.get("detail"),
+                         "dimensions": entry.get("dimensions", {}), "record": json.loads(raw_record)})
+    return {"records": page, "has_more": False}
+
+
 def _demo(state):
     content = state_text(state)
     if re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", content):
@@ -272,6 +323,7 @@ def screen_dataset(input_path: Path, output_dir: Path, config: dict, progress=No
               "counts": counts, "processed": 0, "errors": [], "error_count": 0, "unevaluated": 0, "config": cfg, "config_hash": config_hash,
               "engine_version": ENGINE_VERSION, "dimensions": {}, "api_requests": 0, "cache_hits": 0,
               "usage": {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}, "models": {},
+              "decision_reasons": {"review": {}, "reject": {}},
               "thresholds": effective_thresholds(rubric, cfg["confidence"]) if client else {}, "dedupe": dedupe_mode,
               "input_exhausted": False, "artifacts": {name: f"{name}.jsonl" for name in ("keep", "review", "reject", "audit")}}
     if client is None:
@@ -393,6 +445,10 @@ def screen_dataset(input_path: Path, output_dir: Path, config: dict, progress=No
             decision = result["decision"]
             counts[decision] += 1
             report["processed"] += 1
+            if decision != "keep":
+                reasons = report["decision_reasons"][decision]
+                label = reason_label(result)
+                reasons[label] = reasons.get(label, 0) + 1
             for name, dimension in result["dimensions"].items():
                 aggregate = report["dimensions"].setdefault(name, {"keep": 0, "review": 0, "reject": 0, "evaluated": 0, "confidence_sum": 0, "probability_sum": 0, "gates": {}})
                 aggregate[dimension["decision"]] += 1

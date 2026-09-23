@@ -83,6 +83,31 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/runs/{run['id']}/artifacts/%2e%2e/metadata.sqlite3").status_code, 404)
         self.assertEqual(self.client.post(f"/api/runs/{run['id']}/retry").status_code, 409)
 
+    def test_held_back_records_are_listed_with_reasons_and_summary_view_is_light(self):
+        rows = [{"text": f"Useful support record number {i}"} for i in range(6)]
+        rows += [{"text": "Useful support record number 0"}, {"text": "tiny"}, {"text": "Write to jane.doe@example.com for help"}]
+        body = "".join(json.dumps(row) + "\n" for row in rows).encode()
+        run = self.wait_run(self.start(self.upload(body), auto_train=False)["id"])
+        self.assertEqual(run["counts"], {"total": 9, "keep": 6, "review": 1, "reject": 2, "duplicates": 1})
+        self.assertEqual(run["data_report"]["decision_reasons"],
+                         {"review": {"demo_email_pattern": 1}, "reject": {"exact_duplicate": 1, "content_length_outside_bounds": 1}})
+        rejected = self.client.get(f"/api/runs/{run['id']}/records", params={"decision": "reject"}).json()
+        self.assertEqual([(r["line"], r["reason"], r["record"]["text"]) for r in rejected["records"]],
+                         [(7, "exact_duplicate", "Useful support record number 0"), (8, "content_length_outside_bounds", "tiny")])
+        self.assertFalse(rejected["has_more"])
+        page = self.client.get(f"/api/runs/{run['id']}/records", params={"decision": "reject", "limit": 1, "offset": 1}).json()
+        self.assertEqual([r["line"] for r in page["records"]], [8])
+        filtered = self.client.get(f"/api/runs/{run['id']}/records", params={"decision": "reject", "reason": "exact_duplicate"}).json()
+        self.assertEqual([r["line"] for r in filtered["records"]], [7])
+        review = self.client.get(f"/api/runs/{run['id']}/records").json()
+        self.assertEqual(review["records"][0]["reason"], "demo_email_pattern")
+        self.assertEqual(self.client.get(f"/api/runs/{run['id']}/records", params={"decision": "maybe"}).status_code, 422)
+        self.assertEqual(self.client.get("/api/runs/missing/records").status_code, 404)
+        summary = self.client.get("/api/runs", params={"view": "summary"}).json()[0]
+        self.assertEqual(summary["counts"], run["counts"])
+        self.assertFalse({"logs", "data_report", "model_report", "artifacts"} & set(summary))
+        self.assertIn("logs", self.client.get("/api/runs").json()[0])
+
     def test_csv_upload_preserves_quoted_newlines_and_metadata(self):
         dataset = self.upload(b'text,source\n"A useful text\nwith two lines",synthetic\nAnother useful text,synthetic\n', "table.csv")
         self.assertEqual(dataset["rows"], 2)
